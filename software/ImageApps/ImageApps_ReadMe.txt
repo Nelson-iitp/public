@@ -1,4 +1,4 @@
-Contains 3 programs
+Contains 2 programs
 
 ImageEditor.exe - simple image editor for taking notes using pen tablets
 ScreenCanvas.exe - Turns your screen into a canvas for drawing, usefule tool for annotating presentations and videos
