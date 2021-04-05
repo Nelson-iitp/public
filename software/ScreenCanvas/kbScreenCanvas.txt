@@ -1,0 +1,104 @@
+Mouse Control:
+on canvas
+	right-click: toolbox toggle
+	mouse-wheel: axis rotation
+	middle-drag: Pan Canvas - restricted by scroll lock
+	middle-click: center image - restricted by scroll lock
+	left-click : as per editor tool (pointer = refresh canvas image)
+
+the labels for marker,shape and earaser in color pallete
+	left-click to toggle trackbars
+	middle-click: toogle toolbox visibility (not color palate)
+	right-click: alt-menu
+
+on small-color boxes:
+	left click to select as main color(panel_selcol)
+	right-click to select solor via color dialog
+	middle-click to copy color from main color(panel_selcol)
+
+on main-color box (panel_selcol):
+	left-click to hue-shift once
+	mid-click to clear canvas
+	right-click: alt-menu
+
+on anchor:
+	left-drag to move around
+	2 left-click to toggle canvas mode
+	middle-click to clear canvas
+	right-click: alt-menu
+
+on tray icon:
+	2 left-click to reset anchor
+		
+
+Escape - if canvas is ON then do canvas OFF, else Quit app
+Enter - toggle canvas ON-OFF
+
+ctrl + Z/Y - undo/redo
+
+keys.Add/Subtract - change either of marker,shape,eraser width
+	ctrl : +25
+	shift : +5
+	none : +1
+
+arrow keys - pan change/ canvas view
+	ctrl: resize canvas by 1x (wid or hig) as specifed in setting page
+	alt: pan to edge
+	shift: pan 100px
+	none: pan 1 screen bound
+
+keys.space
+	none: Screenshot primary screeen
+	ctrl: ScreenShot all screens
+	ctrl + alt: Reset canvas size to default as specified in settings page
+	alt: Reset Pan (corner at origin)
+	shift: Clear Canvas
+	
+keys.S
+	shift: to save on choosen bg color othervise save transparent (when choosing color, simply click ok to set transparency key as bg color)
+	ctrl: save selection, otherwise save full image (wont work if nothing is selected)
+	alt: show save dialog, otherwise get unique name and save in quicksave dir
+
+so only S will quicksave full image on transparent bg
+
+keys.A
+	none: switch to select tool
+	ctrl: switch to selelct tool and select all
+
+keys.Delete or Backspace - clear selected area of image <- use this instead of cutting to avoid putting to clipboard
+
+ctrl + keys.X = cut selected
+keys.C:
+	ctrl: if selecting then copy selected area otherwise do nothing
+	shift: switch to screencopy tool
+	none: Export clipboard image to file (using a dialog)
+
+keys.V
+	ctrl: switch to paste tool
+	shift: switch to paste sized tool
+	none: Import clipboard content (image or file) - initializes the canvas to this image size - its like opening a file
+
+keys.decimal - animation
+
+switch to editor tools..
+P - pointer
+M - marker
+N - calligraphy
+O - circle dia
+U - 	none: axis marker
+	ctrl: clear marked points
+	shift: toggle axis view
+	alt: toggle drop perpendiculars
+L - line
+H - path
+E -	none: Eraser
+	shift: toggle trails
+B - table
+G - half rectangle
+R - rectangle
+I - ellipse
+D - timestamp
+T - text
+	ctrl: show text input window
+	shift: toggle import text from clipboard
+K - color picker
