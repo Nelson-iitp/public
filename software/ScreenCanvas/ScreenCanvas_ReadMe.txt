@@ -3,7 +3,7 @@ ScreenCanvas is for Windows Platform Only and requires .NET Framework 4.0 or mor
 
 ________________________________________________
 Visit this site for complete information
-https://spookyisgod.wordpress.com/imageapps/
+https://spookyisgod.wordpress.com/screencanvas/
 
 
 
