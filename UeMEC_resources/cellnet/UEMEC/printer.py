@@ -78,7 +78,21 @@ class SHOW:
 
         self.P(self.end)
 
+class RCONV:
+    def __init__(self,Input_Range, Mapped_Range) -> None:
+        self.input_range(Input_Range)
+        self.mapped_range(Mapped_Range)
 
+    def input_range(self, Input_Range):
+        self.Li, self.Hi = Input_Range
+        self.Di = self.Hi - self.Li
+    def mapped_range(self, Mapped_Range):
+        self.Lm, self.Hm = Mapped_Range
+        self.Dm = self.Hm - self.Lm
+    def map2in(self, m):
+        return ((m-self.Lm)*self.Di/self.Dm) + self.Li
+    def in2map(self, i):
+        return ((i-self.Li)*self.Dm/self.Di) + self.Lm
 #=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
 
 #=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
