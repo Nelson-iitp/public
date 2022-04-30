@@ -3,15 +3,10 @@
 import matplotlib.pyplot as plt
 from matplotlib.patches import Circle
 import mpl_toolkits.mplot3d.art3d as art3d
+from .relearn.core import SPACE, ENV, MEMORY
+from .basic import RCONV
 from numpy.random import default_rng
-import numpy as np
-from sklearn.utils import resample
-from .known.basic import RCONV
-
-import gym
-import gym.spaces
-
-
+import torch as tt
 
 
 
@@ -110,7 +105,7 @@ class UAV:
 class IOT:
     dims = 14
     def __init__(self, tensor, ptx, dtx) -> None:
-        self.tensor = tensor 
+        self.tensor = tensor #tt.zeros( size=(self.dims, ), dtype=dtype, device=device) 
 
         # view
         self.loc = self.tensor[0:3]             # x,y,z +3
@@ -165,11 +160,10 @@ class PARAMS:
         self.n_BSV, self.n_UAV, self.n_IOT = n_BSV, n_UAV, n_IOT
         self.n_OFF = self.n_UAV + self.n_BSV
 
-        SQ = 10000
-        self.XR, self.YR, self.ZR =             (-SQ, SQ),    (-SQ, SQ),  (0, 120)
-        self.XR_IOT, self.YR_IOT, self.ZR_IOT = (-SQ, SQ),    (-SQ, SQ),    (1, 5)
-        self.XR_UAV, self.YR_UAV, self.ZR_UAV = (-SQ, SQ),    (-SQ, SQ),    (10, 100)
-        self.XR_BSV, self.YR_BSV, self.ZR_BSV = (-SQ, SQ),    (-SQ, SQ),    (1, 2)
+        self.XR, self.YR, self.ZR =             (-1000, 1000),  (-1000, 1000),  (0, 120)
+        self.XR_IOT, self.YR_IOT, self.ZR_IOT = (-1000, 1000),    (-1000, 1000),    (1, 5)
+        self.XR_UAV, self.YR_UAV, self.ZR_UAV = (-1000, 1000),    (-1000, 1000),    (10, 100)
+        self.XR_BSV, self.YR_BSV, self.ZR_BSV = (-1000, 1000),    (-1000, 1000),    (1, 2)
 
         self.LR = (1000, 5000) # bits
         self.CR = (10, 20) # cc/bit
@@ -183,61 +177,68 @@ class PARAMS:
         self.PRX_BSV = 3 #watts
 
         self.PTX_IOT = 1 # Watts
-        self.DTX_IOT = 500 # meters
+        self.DTX_IOT = 250 # meters
 
         #ptx, dtx, avail_cc, avail_bw, prx
         self.PTX_UAV = 2 # Watts
-        self.DTX_UAV = 1000 # meters
+        self.DTX_UAV = 400 # meters
         self.AVAIL_CC_UAV = 1000_000 #Hz
         self.AVAIL_BW_UAV = 1000_000 # total bw
         self.PRX_UAV = 2 #watts
 
     def local_dis(self, x1, x2):
-        return (np.sum( ( x1 - x2 ) **2 )) **0.5
+        return (tt.sum( ( x1 - x2 ) **2 )) **0.5
         
-class UeMEC(gym.Env):
+class UeMEC(ENV):
     
-    def __init__(self, params, seed=None, logging="", frozen=False, max_episode_steps=5) -> None:
-        super().__init__()
+    def __init__(self, device, params, cap=None, meed=None, seed=None, logging="", frozen=False) -> None:
         self.rng = default_rng(seed)
         self.params = params
 
         # state dimension
         self.nS = int(self.params.n_BSV*BSV.dims + self.params.n_UAV*UAV.dims + self.params.n_IOT* IOT.dims)
 
+        #<-- discrete action
+        #self.nA = int(1 + 2*self.params.n_IOT + 4*self.params.n_UAV + 4*self.params.n_BSV) 
+
         # continuous action - # x,y for each bsv and uav = 2b + 2u and auto offload for each iot = +i
         self.nA = int( 2*self.params.n_BSV +  2*self.params.n_UAV + self.params.n_IOT ) 
         self.rfx = RCONV((-1,1), (self.params.XR[0], self.params.XR[1]))
         self.rfy = RCONV((-1,1), (self.params.YR[0], self.params.YR[1]))
-
-        self._max_episode_steps = max_episode_steps
+        # [bx + by + ux + uy + ioff]
+        
+        #A_SPACE =   
+                    #(SPACE( (), dtype=tt.int16, low=0, high=self.nA ,discrete=True)) \
+                    #if (discrete_action) else \
+                    #(SPACE( (self.nA,), dtype=tt.float32, low=-1, high=1, discrete=False))
         
         basic_spaces={
-            'S' :   ( (self.nS,), np.float32 ),
-            'A' :   ( (self.nA,), np.float32), #<--- discrete / continuous
+            'S' :   SPACE( (self.nS,), tt.float32 ),
+            'A' :   SPACE( (self.nA,), dtype=tt.float32, low=-1, high=1, discrete=False), #<--- discrete / continuous
+            'R' :   SPACE( (), dtype=tt.float32),
+            'D' :   SPACE( (), dtype=tt.int8),
         }
         extended_spaces={
-            'DIU': ( (self.params.n_IOT, self.params.n_UAV), np.float32),
-            'DUB': ( (self.params.n_UAV, self.params.n_BSV), np.float32),
-            'STEP': ( (1,), np.int32),
-            'COST': ( (1,), np.float32),
-            'ROT': ( (1,), np.float32),
+            'DIU': SPACE( (self.params.n_IOT, self.params.n_UAV), tt.float32),
+            'DUB': SPACE( (self.params.n_UAV, self.params.n_BSV), tt.float32),
+            'ACT': SPACE( (self.nA,), dtype=tt.float32), 
+            'STEP': SPACE( (), dtype=tt.int32),
+            'COST': SPACE( (), dtype=tt.float32),
+            'ROT': SPACE( (), dtype=tt.float32),
         }
         spaces = {}
         spaces.update(basic_spaces)
         spaces.update(extended_spaces)
-        for k,(s,d) in spaces.items():
-            setattr(self, k, np.zeros(s, d))
-        
-        state_vector = np.zeros_like(self.S)
-        self.observation_space = gym.spaces.Box(low=state_vector-np.inf, high=state_vector+np.inf, shape=state_vector.shape, dtype=np.float32)
-
-        action_vector = np.zeros_like(self.A)
-        self.action_space = gym.spaces.Box(low=action_vector-1, high=action_vector+1, shape=action_vector.shape, dtype=np.float32)
-
+        super().__init__(device, spaces , buffer_as_attr=True)
+        if cap:
+            self.enable_snap(MEMORY(self.device, cap, basic_spaces)) 
+            self.memory.seed(meed)
+            print('[> enabled memory on UeMEC :[dev={}, cap={}, seed={}]'.format(self.device, cap, meed))
         self.open_log(logging) if logging else self.close_log()
         self.frozen=frozen
-        self.init()
+
+            
+        
 
     """ ===============================================================================================================  """
     """ Logging """
@@ -300,7 +301,7 @@ class UeMEC(gym.Env):
                 art3d.pathpatch_2d_to_3d(cover, z=0, zdir="z")
             
             if offloading:
-                off, cc = iot.off, iot.cc
+                off, cc = iot.off.item(), iot.cc.item()
                 if not (off<0):
                     cover = Circle((ii[0], ii[1]), 10, color=('tab:blue' if off==0 else 'tab:red'), linewidth=1, fill=True)
                     ax.text(ii[0], ii[1], -5, str(cc)+'cc', color='tab:green')
@@ -343,14 +344,14 @@ class UeMEC(gym.Env):
             
 
         for i, iot in enumerate(self.iot):#<--- for each iot, connect to its parent
-            uav, bw = int(iot.parent[0]), iot.parent_bw[0]
+            uav, bw = int(iot.parent[0].item()), iot.parent_bw[0].item()
             if uav>=0:
                 ui = self.uav[uav].loc
                 ii = iot.loc
                 ax.plot( (ui[0], ii[0]), (ui[1], ii[1]), (ui[2], ii[2]), color='tab:green', linewidth=1, linestyle='solid' ) # 0.1*bw
 
         for i, uav in enumerate(self.uav):#<--- for each iot, connect to its parent
-            bsv, bw = int(uav.parent[0]), uav.parent_bw[0]
+            bsv, bw = int(uav.parent[0].item()), uav.parent_bw[0].item()
             if bsv>=0:
                 ui = self.bsv[bsv].loc
                 ii = uav.loc
@@ -388,7 +389,7 @@ class UeMEC(gym.Env):
                 task_o=self.rng.integers(self.params.OR[0], self.params.OR[1]), 
                 task_r=self.rng.integers(self.params.RR[0], self.params.RR[1])
             ) # randomly set task parameters
-        self.last_iot_state = np.zeros_like(self.IOT) + self.IOT
+        self.last_iot_state = tt.zeros_like(self.IOT) + self.IOT
     def _random_UAV(self):
         zz = self.rng.integers(self.params.ZR_UAV[0], self.params.ZR_UAV[1])
         for uav in self.uav:
@@ -398,7 +399,7 @@ class UeMEC(gym.Env):
                 y=self.rng.integers(self.params.YR_UAV[0], self.params.YR_UAV[1]),
                 z=zz
                 ) # randomly set location
-        self.last_uav_state = np.zeros_like(self.UAV) + self.UAV
+        self.last_uav_state = tt.zeros_like(self.UAV) + self.UAV
     def _random_BSV(self):
         zz=self.rng.integers(self.params.ZR_BSV[0], self.params.ZR_BSV[1])
         for bsv in self.bsv:
@@ -408,7 +409,7 @@ class UeMEC(gym.Env):
                 y=self.rng.integers(self.params.YR_BSV[0], self.params.YR_BSV[1]),
                 z=zz
                 ) # randomly set location
-        self.last_bsv_state = np.zeros_like(self.BSV) + self.BSV
+        self.last_bsv_state = tt.zeros_like(self.BSV) + self.BSV
     def random_INIT(self):
         self._random_BSV()
         self._random_UAV()
@@ -450,27 +451,27 @@ class UeMEC(gym.Env):
 
         si = 0
         ei = self.params.n_BSV*BSV.dims
-        self.BSV = self.S[si: ei].reshape((self.params.n_BSV,BSV.dims))
+        self.BSV = self.S[si: ei].view((self.params.n_BSV,BSV.dims))
 
         si = ei
         ei += self.params.n_UAV*UAV.dims
-        self.UAV = self.S[si:ei].reshape((self.params.n_UAV, UAV.dims))
+        self.UAV = self.S[si:ei].view((self.params.n_UAV, UAV.dims))
 
         si = ei
         ei += self.params.n_IOT* IOT.dims
-        self.IOT = self.S[si:ei].reshape((self.params.n_IOT, IOT.dims))
+        self.IOT = self.S[si:ei].view((self.params.n_IOT, IOT.dims))
 
         si = 0
         ei = int( 2*self.params.n_BSV)
-        self.ACT_BSV=self.A[si:ei]
+        self.ACT_BSV=self.ACT[si:ei]
 
         si = ei
         ei += int( 2*self.params.n_UAV )
-        self.ACT_UAV=self.A[si:ei]
+        self.ACT_UAV=self.ACT[si:ei]
 
         si = ei
         ei += int( self.params.n_IOT )
-        self.ACT_IOT=self.A[si:ei]
+        self.ACT_IOT=self.ACT[si:ei]
 
         self.iot = [ IOT(self.IOT[n], self.params.PTX_IOT, self.params.DTX_IOT) for n in range(self.params.n_IOT) ] # iot devices
         self.uav = [ UAV(self.UAV[n], self.params.PTX_UAV, self.params.DTX_UAV,self.params.AVAIL_CC_UAV,self.params.AVAIL_BW_UAV, self.params.PRX_UAV) for n in range(self.params.n_UAV) ] # uav devices 
@@ -490,95 +491,89 @@ class UeMEC(gym.Env):
        # print('[COST')
         cost = 0
         for iot in self.iot:
-            cost -= (iot.off[0]+1)
+            cost -= (iot.off[0].item()+1)
         return cost
 
-    def reset(self):
+    def _reset(self):
         self.print('--> ENV::[reset]')
-        self.IOT[:] = self.last_iot_state
-        self.UAV[:] = self.last_uav_state
-        self.BSV[:] = self.last_bsv_state
+        self.IOT.copy_(self.last_iot_state)
+        self.UAV.copy_(self.last_uav_state)
+        self.BSV.copy_(self.last_bsv_state)
         self.update_distances()
 
         self.ACT_BSV*=0
         self.ACT_UAV*=0
         self.ACT_IOT*=0
-        self.A[:] = (0)
-        self.ROT[:] = (0)
-        self.STEP[:] = (0)
-        self.COST[:] = (self.cost())
+        self.A.fill_(0)
+        self.R.fill_(0)
+        self.ROT.fill_(0)
+        self.D.fill_(0)
+        self.STEP.fill_(0)
+        self.COST.fill_(self.cost())
 
-        return self.state()
+        return False
 
     def act(self, action):
         self.print('--> ENV::[act] @ [{}]'.format(action))
-        #assert(action.shape[0] == self.nA)
-        self.A[:] = action
-        #for b in range(self.params.n_BSV):
-            #self.ACT_BSV[b] =                   self.rfx.in2map( self.A[b] )
-            #self.ACT_BSV[b+self.params.n_BSV] =   self.rfy.in2map( self.A[b+self.params.n_BSV] )
-        self.ACT_BSV[0:self.params.n_BSV] =                   self.rfx.in2map( self.A[0:self.params.n_BSV] )
-        self.ACT_BSV[self.params.n_BSV:self.params.n_BSV*2] =   self.rfy.in2map( self.A[self.params.n_BSV:self.params.n_BSV*2] )
-        #self.ACT_BSV[:] =  self.rfx.in2map( self.A[low:low+self.params.n_BSV] )
+        assert(action.shape[0] == self.nA)
+        self.A.copy_(tt.tensor(action))
+        self._act()
+        return 
+
+    def _act(self):
+        for b in range(self.params.n_BSV):
+            self.ACT_BSV[b] =                   self.rfx.in2map( self.A[b].item() )
+            self.ACT_BSV[b+self.params.n_BSV] =   self.rfy.in2map( self.A[b+self.params.n_BSV].item() )
 
         
         low = self.params.n_BSV*2
-        high = low+self.params.n_UAV
-        #print(low, high, high+self.params.n_UAV, '------', self.A.shape)
-        #for u in range(self.params.n_UAV):
-        #    self.ACT_UAV[u] =         self.rfx.in2map( self.A[u+low] )
-        #    self.ACT_UAV[u+self.params.n_UAV] =   self.rfy.in2map( self.A[u+low+self.params.n_UAV] )
-        self.ACT_UAV[0:self.params.n_UAV] =                     self.rfx.in2map( self.A[low:high] )
-        self.ACT_UAV[self.params.n_UAV:self.params.n_UAV*2] =   self.rfy.in2map( self.A[high:high+self.params.n_UAV] )
+        for u in range(self.params.n_UAV):
+            self.ACT_UAV[u] =         self.rfx.in2map( self.A[u+low].item() )
+            self.ACT_UAV[u+self.params.n_UAV] =   self.rfy.in2map( self.A[u+low+self.params.n_UAV].item() )
 
         low = (self.params.n_BSV+self.params.n_UAV)*2
         for i in range(self.params.n_IOT):
-            self.ACT_IOT[i] = 0 if self.A[i+low] < 0 else 1
+            self.ACT_IOT[i] = 0 if self.A[i+low].item() < 0 else 1
 
-        return 
+        return #self.ACT.flatten()
 
-    def step(self, action):
-        self.act(action)
+    def step(self):
         self.print('--> ENV::[step_begin]')
         # execute action
         status=True
-        reason = ""
         if status:
             for b in range(self.params.n_BSV):
                 truth = self.move_BSV(b, self.ACT_BSV[b], self.ACT_BSV[b+self.params.n_BSV])
                 if not truth:
                     status=False
-                    reason+="BSV moved out of range!"
                     break
             if status:
                 for u in range(self.params.n_UAV):
                     truth = self.move_UAV(u, self.ACT_UAV[u], self.ACT_UAV[u+self.params.n_UAV])
                     if not truth:
                         status=False
-                        reason+="\tUAV moved out of range!"
                         break
                 if status:
                     for i in range(self.params.n_IOT):
                         truth = self.auto_offload_IOT(i, self.ACT_IOT[i], self.iot[i].cc_req() )
                         if not truth:
                             status=False
-                            reason+="\tIOT auto-offload failed!"
                             break            
 
         #status = not((False in move_bsv_truth) or (False in move_uav_truth) or (False in iot_off_truth))
-        
+        self.D.fill_((0 if status else 1))
         
         cost = self.cost()
-        reward = float(self.COST - cost)
-        self.COST[:] = (cost)
-        self.ROT+=reward
-        done = ((0 if status else 1))
+        reward = self.COST.item() - cost
+
+        self.COST.fill_(cost)
+        self.R.fill_(reward)
+        self.ROT+=self.R
+
         self.STEP+=1 # increment step
-        if self.STEP >= self._max_episode_steps:
-            done = True
-            reason='max timesteps reached!'
-        self.print('<--- ENV::[step_end], REW:[{}], DONE:[{}]: COST:[{}], TotalREW:[{}]'.format(reward, done, self.COST, self.ROT))
-        return self.state(), reward, done, {'step':self.STEP[0], 'cost':self.COST[0], 'RoT':self.ROT[0], 'reason':reason}
+        done = (self.D.item()>0)
+        self.print('<--- ENV::[step_end], REW:[{}], DONE:[{}]: COST:[{}], TotalREW:[{}]'.format(reward, done, self.COST.item(), self.ROT.item()))
+        return done
 
 
     def close(self):
@@ -611,7 +606,7 @@ class UeMEC(gym.Env):
         #self._moved_bsv(bsv)# moving bsv might disconnect uavs
         for u in range(self.params.n_UAV):
             self.DUB[u, bsv] = self.params.local_dis( self.bsv[bsv].loc , self.uav[u].loc )
-            if self.uav[u].parent[0]==bsv:
+            if self.uav[u].parent[0].item()==bsv:
                 if self.DUB[u, bsv] > self.uav[u].dtx:
                     self.print('\t[x] BSV[{}] Moved out of transmit range of UAV[{}] - will be disconnected'. format(bsv, u))
                     self.disconnect_UAV_BSV(u)
@@ -635,14 +630,14 @@ class UeMEC(gym.Env):
         #self._moved_uav(uav)
         for i in range(self.params.n_IOT):
             self.DIU[i,uav] = self.params.local_dis( self.iot[i].loc , self.uav[uav].loc )
-            if self.iot[i].parent[0]==uav:
+            if self.iot[i].parent[0].item()==uav:
                 if self.DIU[i,uav] > self.iot[i].dtx:
                     self.print('\t[x] UAV[{}] Moved out of transmit range of IOT[{}] - will be disconnected'. format(uav, i))
                     self.disconnect_IOT_UAV(i)
         
         for b in range(self.params.n_BSV):
             self.DUB[uav, b] = self.params.local_dis( self.bsv[b].loc , self.uav[uav].loc )
-        myb = int(self.uav[uav].parent[0])
+        myb = int(self.uav[uav].parent[0].item())
         if myb>=0:
             if self.DUB[uav, myb] > self.uav[uav].dtx:
                 self.print('\t[x] BSV[{}] is now out of transmit range of UAV[{}] - will be disconnected'. format(myb, uav))
@@ -657,7 +652,7 @@ class UeMEC(gym.Env):
             self.print('\t[!] invalid args supplied to moveby_BSV()')
             return False
         b_loc  = self.bsv[bsv].loc[0:2]
-        return self.move_BSV(bsv, b_loc[0]+x, b_loc[1]+y)
+        return self.move_BSV(bsv, b_loc[0].item()+x, b_loc[1].item()+y)
         
     def moveby_UAV(self, u, x, y):
         uav = int(u)
@@ -665,7 +660,7 @@ class UeMEC(gym.Env):
             self.print('\t[!] invalid args supplied to moveby_UAV()')
             return False
         u_loc  = self.uav[uav].loc[0:2]
-        return self.move_UAV(uav, u_loc[0]+x, u_loc[1]+y)
+        return self.move_UAV(uav, u_loc[0].item()+x, u_loc[1].item()+y)
         
     
     """ Connection """
@@ -690,7 +685,7 @@ class UeMEC(gym.Env):
             return False
 
         if self.bsv[bsv].avail_bw[0] < bw:
-            print('\t[!] Connection Failed... Not enough bandwidth[{}] available at parent BSV[{}/{}]'.format(bw, bsv, self.bsv[bsv].avail_bw[0]))
+            print('\t[!] Connection Failed... Not enough bandwidth[{}] available at parent BSV[{}/{}]'.format(bw, bsv, self.bsv[bsv].avail_bw[0].item()))
             return False
 
         self.uav[uav].parent[0] = bsv
@@ -717,13 +712,13 @@ class UeMEC(gym.Env):
             self.print('\t[!] not in transmission range')
             return False
 
-        #pbsv = int(self.uav[uav].parent[0])
+        #pbsv = int(self.uav[uav].parent[0].item())
         #if pbsv<0:
         #    # print('Not connected to a BSV)
         #    return
 
         if self.uav[uav].avail_bw[0] < bw:
-            self.print('\t[!] Connection Failed... Not enough bandwidth[{}] available at parent UAV[{}/{}]'.format(bw, uav, self.uav[uav].avail_bw[0]))
+            self.print('\t[!] Connection Failed... Not enough bandwidth[{}] available at parent UAV[{}/{}]'.format(bw, uav, self.uav[uav].avail_bw[0].item()))
             return False
         
         self.iot[iot].parent[0] = uav
@@ -754,7 +749,7 @@ class UeMEC(gym.Env):
                     self.onload_IOT(iot)
 
         self.bsv[ibsv].avail_bw[0]+=ibw # disconnect and reclaim bandwidth
-        self.print('\t[+] UAV-Disconnected from BSV[{}] reclaimed bandwidth [{}/{}]'.format(ibsv, ibw, self.bsv[ibsv].avail_bw[0]))
+        self.print('\t[+] UAV-Disconnected from BSV[{}] reclaimed bandwidth [{}/{}]'.format(ibsv, ibw, self.bsv[ibsv].avail_bw[0].item()))
 
         self.uav[uav].parent[0] = -1 
         self.uav[uav].parent_bw[0] = 0 
@@ -776,7 +771,7 @@ class UeMEC(gym.Env):
         
         self.onload_IOT(iot) if self.iot[iot].off>=0 else None # check if its offloading as well
         self.uav[iuav].avail_bw[0]+=ibw # disconnect and reclaim bandwidth
-        self.print('\t[+] IOT-Disconnected from UAV [{}] reclaimed bandwidth [{}/{}]'.format(iuav, ibw, self.uav[iuav].avail_bw[0]))
+        self.print('\t[+] IOT-Disconnected from UAV [{}] reclaimed bandwidth [{}/{}]'.format(iuav, ibw, self.uav[iuav].avail_bw[0].item()))
 
         self.iot[iot].parent[0] = -1 
         self.iot[iot].parent_bw[0] = 0 
@@ -798,17 +793,17 @@ class UeMEC(gym.Env):
         #self.print('[*] Parent-Chain: IOT[{}] --> UAV[{}] --> BSV[{}]'.format(iot, puav, pbsv))
         
         if i_off_loc == 0: # offloading currently to uav
-            puav =  int(iiot.parent[0])
+            puav =  int(iiot.parent[0].item())
             self.uav[puav].avail_cc[0]+= i_off_cc
-            self.print('\t[+] Reclaimed [{}]CC to UAV[{}] now has [{}]CC'.format(i_off_cc, puav, self.uav[puav].avail_cc[0]))
+            self.print('\t[+] Reclaimed [{}]CC to UAV[{}] now has [{}]CC'.format(i_off_cc, puav, self.uav[puav].avail_cc[0].item()))
            
         elif i_off_loc == 1: # offloading to bsv
-            puav =  int(iiot.parent[0])
+            puav =  int(iiot.parent[0].item())
             pbsv = ( -1 if puav<0 else int(self.uav[puav].parent[0]))
             if not (pbsv>=0 and pbsv<self.params.n_BSV):
                 raise StopIteration('Invalid pbsv:[{}] - {}'.format(pbsv, iiot))
             self.bsv[pbsv].avail_cc[0]+= i_off_cc
-            self.print('\t[+] Reclaimed [{}]CC to BSV[{}] now has [{}]CC'.format(i_off_cc, pbsv, self.bsv[pbsv].avail_cc[0]))
+            self.print('\t[+] Reclaimed [{}]CC to BSV[{}] now has [{}]CC'.format(i_off_cc, pbsv, self.bsv[pbsv].avail_cc[0].item()))
             
         else:
             #print('... not offloading anywhere')
@@ -838,7 +833,7 @@ class UeMEC(gym.Env):
             self.print('\t[!] cannot offload an already offloading iot')
             return False
 
-        puav =  int(iiot.parent[0])
+        puav =  int(iiot.parent[0].item())
         pbsv = ( -1 if puav<0 else int(self.uav[puav].parent[0]))
 
         if off_loc==0: # trying to offload to uav
@@ -851,7 +846,7 @@ class UeMEC(gym.Env):
                 self.uav[puav].avail_cc[0] -= off_cc
                 self.print('\t[+] Offloading to UAV Success')
             else:
-                self.print('\t[^] Offloading to UAV Failed ... Not enough CC[{}] available on UAV[{}/{}]CC'.format(off_cc, puav, self.uav[puav].avail_cc[0]))
+                self.print('\t[^] Offloading to UAV Failed ... Not enough CC[{}] available on UAV[{}/{}]CC'.format(off_cc, puav, self.uav[puav].avail_cc[0].item()))
         elif off_loc==1: # trying to offload to bsv
             if pbsv<0:
                 self.print('\t[!] Trying to offload to BSV but not connected to one')
@@ -862,7 +857,7 @@ class UeMEC(gym.Env):
                 self.bsv[pbsv].avail_cc[0]-=off_cc
                 self.print('\t[+] Offloading to BSV Success')
             else:
-                self.print('\t[^] Offloading to BSV Failed ... Not enough CC[{}] available on BSV[{}/{}]CC'.format(off_cc, puav, self.bsv[pbsv].avail_cc[0]))
+                self.print('\t[^] Offloading to BSV Failed ... Not enough CC[{}] available on BSV[{}/{}]CC'.format(off_cc, puav, self.bsv[pbsv].avail_cc[0].item()))
         else:
             raise StopIteration('Not possible!')
         return True
@@ -882,17 +877,17 @@ class UeMEC(gym.Env):
         #assert(off_loc==0 or off_loc==1)
         #print('Trying to offload IOT[{}] at LOC[{}] with [{}]CC'.format(iot, off_loc, off_cc))
         iiot = self.iot[iot]
-        puav =  int(iiot.parent[0])
+        puav =  int(iiot.parent[0].item())
         if puav <0 : # not connected
             
             # connect to nearesst uav
-            near_uav = np.argmin(self.DIU[iot, :])
+            near_uav = tt.argmin(self.DIU[iot, :]).item()
             self.print('\t[?] Parent-UAV not connected!\n\t ... trying to connect to nearest UAV [{}]'.format(near_uav))
             if not self.connect_IOT_UAV(iot,near_uav , self.iot[iot].bw_req()):
                 self.print('\t[!] Could not connect to near-UAV[{}]'.format(near_uav))
                 return True # could not connect
             self.print('\t[+] Connected to near-UAV[{}]'.format(near_uav))
-        puav =  int(iiot.parent[0])
+        puav =  int(iiot.parent[0].item())
         assert(puav>=0)
         
 
@@ -916,7 +911,7 @@ class UeMEC(gym.Env):
             if pbsv <0 : # not connected
                 
                 # connect to nearesst bsv
-                near_bsv=np.argmin(self.DUB[puav, :])
+                near_bsv=tt.argmin(self.DUB[puav, :]).item()
                 self.print('\t[?] Parent-BSV not connected! ... trying to connect to nearest BSV [{}]'.format(near_bsv))
                 if not self.connect_UAV_BSV(puav, near_bsv, self.params.AVAIL_BW_BSV/self.params.n_UAV):
                     self.print('\t[!] Could not connect to near-BSV[{}]'.format(near_bsv))

@@ -3,17 +3,13 @@
 import matplotlib.pyplot as plt
 from matplotlib.patches import Circle
 import mpl_toolkits.mplot3d.art3d as art3d
+
 from numpy.random import default_rng
 import numpy as np
-from sklearn.utils import resample
 from .known.basic import RCONV
 
 import gym
 import gym.spaces
-
-
-
-
 
 class BSV: 
     """ Base Station Vehicle
@@ -165,11 +161,10 @@ class PARAMS:
         self.n_BSV, self.n_UAV, self.n_IOT = n_BSV, n_UAV, n_IOT
         self.n_OFF = self.n_UAV + self.n_BSV
 
-        SQ = 10000
-        self.XR, self.YR, self.ZR =             (-SQ, SQ),    (-SQ, SQ),  (0, 120)
-        self.XR_IOT, self.YR_IOT, self.ZR_IOT = (-SQ, SQ),    (-SQ, SQ),    (1, 5)
-        self.XR_UAV, self.YR_UAV, self.ZR_UAV = (-SQ, SQ),    (-SQ, SQ),    (10, 100)
-        self.XR_BSV, self.YR_BSV, self.ZR_BSV = (-SQ, SQ),    (-SQ, SQ),    (1, 2)
+        self.XR, self.YR, self.ZR =             (-1000, 1000),    (-1000, 1000),  (0, 120)
+        self.XR_IOT, self.YR_IOT, self.ZR_IOT = (-1000, 1000),    (-1000, 1000),    (1, 5)
+        self.XR_UAV, self.YR_UAV, self.ZR_UAV = (-1000, 1000),    (-1000, 1000),    (10, 100)
+        self.XR_BSV, self.YR_BSV, self.ZR_BSV = (-1000, 1000),    (-1000, 1000),    (1, 2)
 
         self.LR = (1000, 5000) # bits
         self.CR = (10, 20) # cc/bit
@@ -183,11 +178,11 @@ class PARAMS:
         self.PRX_BSV = 3 #watts
 
         self.PTX_IOT = 1 # Watts
-        self.DTX_IOT = 500 # meters
+        self.DTX_IOT = 250 # meters
 
         #ptx, dtx, avail_cc, avail_bw, prx
         self.PTX_UAV = 2 # Watts
-        self.DTX_UAV = 1000 # meters
+        self.DTX_UAV = 400 # meters
         self.AVAIL_CC_UAV = 1000_000 #Hz
         self.AVAIL_BW_UAV = 1000_000 # total bw
         self.PRX_UAV = 2 #watts
@@ -219,6 +214,7 @@ class UeMEC(gym.Env):
         extended_spaces={
             'DIU': ( (self.params.n_IOT, self.params.n_UAV), np.float32),
             'DUB': ( (self.params.n_UAV, self.params.n_BSV), np.float32),
+            'ACT': ( (self.nA,), np.float32), 
             'STEP': ( (1,), np.int32),
             'COST': ( (1,), np.float32),
             'ROT': ( (1,), np.float32),
@@ -233,7 +229,7 @@ class UeMEC(gym.Env):
         self.observation_space = gym.spaces.Box(low=state_vector-np.inf, high=state_vector+np.inf, shape=state_vector.shape, dtype=np.float32)
 
         action_vector = np.zeros_like(self.A)
-        self.action_space = gym.spaces.Box(low=action_vector-1, high=action_vector+1, shape=action_vector.shape, dtype=np.float32)
+        self.action_space = gym.spaces.Box(low=action_vector-np.inf, high=action_vector+np.inf, shape=action_vector.shape, dtype=np.float32)
 
         self.open_log(logging) if logging else self.close_log()
         self.frozen=frozen
@@ -462,15 +458,15 @@ class UeMEC(gym.Env):
 
         si = 0
         ei = int( 2*self.params.n_BSV)
-        self.ACT_BSV=self.A[si:ei]
+        self.ACT_BSV=self.ACT[si:ei]
 
         si = ei
         ei += int( 2*self.params.n_UAV )
-        self.ACT_UAV=self.A[si:ei]
+        self.ACT_UAV=self.ACT[si:ei]
 
         si = ei
         ei += int( self.params.n_IOT )
-        self.ACT_IOT=self.A[si:ei]
+        self.ACT_IOT=self.ACT[si:ei]
 
         self.iot = [ IOT(self.IOT[n], self.params.PTX_IOT, self.params.DTX_IOT) for n in range(self.params.n_IOT) ] # iot devices
         self.uav = [ UAV(self.UAV[n], self.params.PTX_UAV, self.params.DTX_UAV,self.params.AVAIL_CC_UAV,self.params.AVAIL_BW_UAV, self.params.PRX_UAV) for n in range(self.params.n_UAV) ] # uav devices 
@@ -524,61 +520,53 @@ class UeMEC(gym.Env):
         
         low = self.params.n_BSV*2
         high = low+self.params.n_UAV
-        #print(low, high, high+self.params.n_UAV, '------', self.A.shape)
         #for u in range(self.params.n_UAV):
         #    self.ACT_UAV[u] =         self.rfx.in2map( self.A[u+low] )
         #    self.ACT_UAV[u+self.params.n_UAV] =   self.rfy.in2map( self.A[u+low+self.params.n_UAV] )
-        self.ACT_UAV[0:self.params.n_UAV] =                     self.rfx.in2map( self.A[low:high] )
-        self.ACT_UAV[self.params.n_UAV:self.params.n_UAV*2] =   self.rfy.in2map( self.A[high:high+self.params.n_UAV] )
+        self.ACT_UAV[0:high] =         self.rfx.in2map( self.A[0+low:high+low] )
+        self.ACT_UAV[high+low:high+self.params.n_UAV+low] =   self.rfy.in2map( self.A[high+low:high+self.params.n_UAV+low] )
 
         low = (self.params.n_BSV+self.params.n_UAV)*2
         for i in range(self.params.n_IOT):
             self.ACT_IOT[i] = 0 if self.A[i+low] < 0 else 1
 
-        return 
+        return #self.ACT.flatten()
 
     def step(self, action):
         self.act(action)
         self.print('--> ENV::[step_begin]')
         # execute action
         status=True
-        reason = ""
         if status:
             for b in range(self.params.n_BSV):
                 truth = self.move_BSV(b, self.ACT_BSV[b], self.ACT_BSV[b+self.params.n_BSV])
                 if not truth:
                     status=False
-                    reason+="BSV moved out of range!"
                     break
             if status:
                 for u in range(self.params.n_UAV):
                     truth = self.move_UAV(u, self.ACT_UAV[u], self.ACT_UAV[u+self.params.n_UAV])
                     if not truth:
                         status=False
-                        reason+="\tUAV moved out of range!"
                         break
                 if status:
                     for i in range(self.params.n_IOT):
                         truth = self.auto_offload_IOT(i, self.ACT_IOT[i], self.iot[i].cc_req() )
                         if not truth:
                             status=False
-                            reason+="\tIOT auto-offload failed!"
                             break            
 
         #status = not((False in move_bsv_truth) or (False in move_uav_truth) or (False in iot_off_truth))
         
         
         cost = self.cost()
-        reward = float(self.COST - cost)
+        reward = self.COST - cost
         self.COST[:] = (cost)
         self.ROT+=reward
         done = ((0 if status else 1))
         self.STEP+=1 # increment step
-        if self.STEP >= self._max_episode_steps:
-            done = True
-            reason='max timesteps reached!'
         self.print('<--- ENV::[step_end], REW:[{}], DONE:[{}]: COST:[{}], TotalREW:[{}]'.format(reward, done, self.COST, self.ROT))
-        return self.state(), reward, done, {'step':self.STEP[0], 'cost':self.COST[0], 'RoT':self.ROT[0], 'reason':reason}
+        return self.state(), reward, done, {'step':self.STEP[0], 'cost':self.COST[0], 'RoT':self.ROT[0]}
 
 
     def close(self):

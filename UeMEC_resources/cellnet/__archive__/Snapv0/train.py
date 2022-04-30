@@ -1,7 +1,7 @@
 
 import UEMEC.rl as rl
 from UEMEC.core import UeMEC, PARAMS
-import UEMEC.printer as kp
+import UEMEC.basic as kp
 import torch as tt
 import random
 import matplotlib.pyplot as plt 
@@ -14,7 +14,7 @@ if __name__=='__main__':
     print('Starting at:[{}]\n\n'.format( kp.now()))
 
 
-    env = UeMEC('cpu', PARAMS(n_BSV, n_UAV, n_IOT) , cap=100_000, meed=None, seed=None, logging="", fixed_move=fixed_move, frozen=False)
+    env = UeMEC('cpu', PARAMS(n_BSV, n_UAV, n_IOT) , cap=100_000, meed=None, seed=None, logging="", fixed_move=fixed_move, frozen=False, discrete_action=True)
     #env.reset()
     #fig=env.render('Initial-Train', True, True, True)
     #fig.savefig('train.png')

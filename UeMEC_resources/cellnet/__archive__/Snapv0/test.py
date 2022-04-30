@@ -1,7 +1,7 @@
 
 import UEMEC.rl as rl
 from UEMEC.core import UeMEC, PARAMS
-import UEMEC.printer as kp
+import UEMEC.basic as kp
 import torch as tt
 import random
 import matplotlib.pyplot as plt 
@@ -12,7 +12,7 @@ if __name__=='__main__':
     max_episode_steps_test = int(max_episode_steps_train* 0.5)
 
     # test
-    env = UeMEC('cpu', PARAMS(n_BSV, n_UAV, n_IOT) , cap=0, meed=None, seed=None, logging="", fixed_move=fixed_move, frozen=True)
+    env = UeMEC('cpu', PARAMS(n_BSV, n_UAV, n_IOT) , cap=0, meed=None, seed=None, logging="", fixed_move=fixed_move, frozen=True, discrete_action=True)
     pie = rl.DQN(env.nS, layers, env.nA, tt.optim.Adam, tt.nn.MSELoss, lr=0.00025, double=False, tuf=0, device='cpu', dtype=tt.float32, relu_act=relu_act )
     pie.load_external('dqn.pie')
     done = env.start()

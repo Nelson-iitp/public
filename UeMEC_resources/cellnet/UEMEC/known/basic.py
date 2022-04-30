@@ -21,11 +21,11 @@ def strD(arr, sep="\n", cep="\t:\t", caption=""):
         res+=str(i) + cep + str(arr[i]) + sep
     return res + "=-=-=-=-==-=-=-=-="+sep
 #=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
-def show(x, sep="\n", cep='\t:\t', P = print):
+def showD(x, sep="\n", cep='\t:\t', P = print):
     """ prints x.__dict__ using strD() """
     P(strD(x.__dict__, sep=sep, cep=cep, caption=str(x.__class__)))
 #=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
-def showx(x, cep='\t\t:', sw='__', ew='__', P = print):
+def show(x, cep='\t\t:', sw='__', ew='__', P = print):
     """ Note: 'sw' can accept tuples """
     for d in dir(x):
         if not (d.startswith(sw) or d.endswith(ew)):
@@ -78,21 +78,7 @@ class SHOW:
 
         self.P(self.end)
 
-class RCONV:
-    def __init__(self,Input_Range, Mapped_Range) -> None:
-        self.input_range(Input_Range)
-        self.mapped_range(Mapped_Range)
 
-    def input_range(self, Input_Range):
-        self.Li, self.Hi = Input_Range
-        self.Di = self.Hi - self.Li
-    def mapped_range(self, Mapped_Range):
-        self.Lm, self.Hm = Mapped_Range
-        self.Dm = self.Hm - self.Lm
-    def map2in(self, m):
-        return ((m-self.Lm)*self.Di/self.Dm) + self.Li
-    def in2map(self, i):
-        return ((i-self.Li)*self.Dm/self.Di) + self.Lm
 #=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
 
 #=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
@@ -146,3 +132,67 @@ def strUx(start='', sep='', end=''):
     * Author:           Nelson.S
 """
 #-----------------------------------------------------------------------------------------------------
+#=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+# Dummy objects
+#=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+#=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+OBJECT = lambda members: type('object', (object,), members)() #<---- create a dummy object on the fly (members is a dictionary)
+#=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+class O:
+    """ dummy object that mimics a dict """
+    def __init__(self, **config_dict):
+        for key, val in config_dict.items():
+            if not (hasattr(self, key)):
+                setattr(self, key, val) # dict[key] = getattr(self, key)
+            else:
+                print('Warning: cannot attribute with name [{}]! Skipping.'.format(key))
+    def __bool__(self):
+        return True if self.__dict__ else False
+    def __len__(self):
+        return len(self.__dict__)
+    def __call__(self, key=None):
+        if key:
+            return key, self.__dict__[key]
+        else:
+            return self.__dict__.items()
+#=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+
+
+from math import floor
+#-----------------------------------------------------------------------------------------------------
+
+#=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+# Shared functions
+#=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+def int2base(num:int, base:int, digs:int) -> list:
+    """ convert base-10 integer (num) to base(base) array of fixed no. of digits (digs) """
+    res = [ 0 for _ in range(digs) ]
+    q = num
+    for i in range(digs): # <-- do not use enumerate plz
+        res[i]=q%base
+        q = floor(q/base)
+    return res
+#=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+def base2int(num:list, base:int) -> int:
+    """ convert array from given base to base-10  --> return integer """
+    res = 0
+    for i,n in enumerate(num):
+        res+=(base**i)*n
+    return res
+#=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+
+class RCONV:
+    def __init__(self,Input_Range, Mapped_Range) -> None:
+        self.input_range(Input_Range)
+        self.mapped_range(Mapped_Range)
+
+    def input_range(self, Input_Range):
+        self.Li, self.Hi = Input_Range
+        self.Di = self.Hi - self.Li
+    def mapped_range(self, Mapped_Range):
+        self.Lm, self.Hm = Mapped_Range
+        self.Dm = self.Hm - self.Lm
+    def map2in(self, m):
+        return ((m-self.Lm)*self.Di/self.Dm) + self.Li
+    def in2map(self, i):
+        return ((i-self.Li)*self.Dm/self.Di) + self.Lm
