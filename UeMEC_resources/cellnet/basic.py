@@ -16,9 +16,9 @@ def strA(arr, start="[\n\t", sep="\n\t", end="\n]"):
 #=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
 def strD(arr, sep="\n", cep="\t:\t", caption=""):
     """ returns a string representation of a dict object for printing """
-    res="=-=-=-=-==-=-=-=-="+sep+"DICT: "+caption+sep+"=-=-=-=-==-=-=-=-="+sep
-    for i in arr:
-        res+=str(i) + cep + str(arr[i]) + sep
+    res="=-=-=-=-==-=-=-=-={}DICT [#-{}] : {}{}=-=-=-=-==-=-=-=-={}".format(sep, len(arr), caption, sep, sep)
+    for k,v in arr.items():
+        res+=str(k) + cep + str(v) + sep
     return res + "=-=-=-=-==-=-=-=-="+sep
 #=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
 def showD(x, sep="\n", cep='\t:\t', P = print):
