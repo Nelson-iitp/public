@@ -1,87 +1,276 @@
-import os
-from math import inf
+
+from math import  inf, pi
 import numpy as np
 import gym.spaces
-from stable_baselines3.common.noise import NormalActionNoise, OrnsteinUhlenbeckActionNoise
-import torch as tt
-from .common import observation_key, action_key, reward_key, done_key, step_key, default_spaces
-from .common import MEM, MLP, MLP2, load_model, save_model, clone_model, REMAP
-import datetime
-now = datetime.datetime.now
+#import datetime
+#now = datetime.datetime.now
+from .common import REMAP, MEM, observation_key, action_key, done_key, step_key
+from controller import Supervisor
+# to pause simulation use - self.simulationSetMode(0)
+
+    
+class MAVSUPER(Supervisor):
+    default_args = {
+        '--time_step_multiplier':       (int, 100), # usually a large step
+        '--epochs' :                    (int, 1), # no of simulation reset
+        '--episodes':                   (int, 1), #<---- episdoes per epoch - each bot completes this much episodes each epoch
+        '--horizon':                    (int, 0), # zero means inf (just to keep it int)
+        '--members':                    (str, "") # should not be blank, do not add the superbot itself
+        } 
+    def __init__(self, parser):
+        # remeber to call   parser = argparse.ArgumentParser() in controler
+        for arg_name,(arg_type, arg_default) in self.default_args.items():
+            parser.add_argument(arg_name, type=arg_type, default=arg_default)
+        for (k,v) in parser.parse_args()._get_kwargs():
+            setattr(self, k, v) #<---- sets on self
+        # any other initialization here
+            
+    def run(self, verbose=False):
+        members = self.members.split(',')
+        while '' in members:
+            members.remove('')
+        if not members:
+            raise Exception('No members found!')
+        
+
+        # get default_arguments of the bot
+        bot_ctrl = 'mavrl'
+        bot_args = { 
+            '--episodes': str( self.episodes ),
+            '--horizon': str( self.horizon ),
+            }
+        #{ k:str(t(d)) for k,(t,d) in MAVBOT.default_args.items() } #<---- everybot should implement default_args dict
+        total_args = len(bot_args)
+
+        # initialize the supervisior itself
+        super().__init__() #<--- this is where supervisor initializes 
+        quanta = int(self.getBasicTimeStep())
+        timestep = self.time_step_multiplier * quanta
+
+        # verbose
+        robot_name = self.getName()
+        #msg = lambda text : print(f'[{robot_name} @ ({now()})]::[{text}]')
+        msg = ((lambda text : print(f'[{robot_name}]: {text}') ) if verbose else (lambda text : None ))
+        msg(f'({bot_ctrl=})::{members=}')
+        # get members and its controller
+        bots = [ self.getFromDef(m) for m in members ]
+        botsctrl = [ b.getField('controller') for b in bots ]
+        botsctrlargs = [ b.getField('controllerArgs') for b in bots ]
+        # Note: initially everything is blank - no controller and args have been created
+        # ready for simulaing episodes
+        self.step(quanta) # take one quant in the simulation #<---- available on super()
+        for epoch in range(self.epochs):
+
+            # reset simulation
+            self.simulationReset()  # by default, it doesn not reset controller
+            msg(f'Start of epoch: {epoch+1}')
+
+            # set controllers on robots
+            for a,c in zip(botsctrlargs, botsctrl):
+                for k,v in bot_args.items():
+                    a.insertMFString(-1, f'{k}={v}')
+                c.setSFString(bot_ctrl)
+            
+            # <--------------------------------------------------------
+            # all agents are called here
+            # <--------------------------------------------------------
+
+            # feed back loop with longer timestep ( > quanta)
+            while (self.step(timestep)!=-1):
+                # read each robot's last controller argument
+                # the last controller argument is added by the bot itself when it is initialized
+                alive = [ (c.getMFString(-1)) for c in botsctrlargs ]
+                if not ('' in alive):
+                    
+                    break # --> all conteollers have exited, reset simulation
+    
+            # <--------------------------------------------------------
+            # all agents return here
+            # <--------------------------------------------------------
+
+            # all contollers are terminated at this point, reset now
+            # NOTE: here we could use
+            #       for b in self.bots:
+            #          b.restartController()
+            # but we may want to load a different controller on each epoch, 
+            # #so we completely remove the previous controller
+            for a,c in zip(botsctrlargs, botsctrl):
+                for _ in range(total_args+1):
+                    a.removeMF(-1)
+                c.setSFString('')
+            msg(f'End of epoch: {epoch+1}')
+
+        # spend one last timestep in the world
+        self.step(timestep) 
+        msg('Done! Simulation Paused')
+        return self.simulationSetMode(0)
 
 
-class MAVPIE:
-    def __init__(self, observation_space, action_space) -> None:
-        self.observation_space=observation_space
-        self.action_space=action_space
-        self.predict = self.predict_random
-        self.policy_theta=None
 
-    def predict_random(self, state):
-        return self.action_space.sample()
-
-    @tt.no_grad()
-    def predict_policy(self, state):
-        #return np.clip(self.policy_theta(state).numpy().astype(self.action_space.dtype), self.action_space.low, self.action_space.high)
-        return self.policy_theta(tt.tensor(state, dtype=tt.float32)).numpy().astype(self.action_space.dtype)
-
-    def load(self, path):
-        if path:
-            self.policy_theta = load_model(path)
-            self.predict = self.predict_policy
-        else:
-            self.predict = self.predict_random
-
-    def save_pie(self, path):
-        if not (self.policy_theta is None):
-            save_model(path, self.policy_theta)
-
-    def new_pie(self, layers, actF, actL):
-        self.policy_theta = MLP(
-            in_dim=self.observation_space.shape[0],
-            layer_dims=layers,
-            out_dim=self.action_space.shape[0],
-            actF=actF, actL=actL
-        )
-        self.predict = self.predict_policy
-
-    def set_pie(self, theta):
-        self.policy_theta = theta
-        self.predict = self.predict_policy
-
-    def has_pie(self):
-        return not (self.policy_theta is None)
-
-class MAVBOT:
-    state_dtype = np.float32
-    action_dtype = np.float64
-    battery_scan_time = 1000
-    initial_wait_time = (battery_scan_time/1000) + 0.1
-    battery_min_val = 100
-
-    def __init__(self, robot, time_step_multiplier):
-        self.robot = robot
-        self.name = robot.getName()
-        self.timestep = int(  robot.getBasicTimeStep() * time_step_multiplier )
-        self.build_spaces()
-        self.pie = MAVPIE(self.observation_space, self.action_space)
+class MAVBOT(Supervisor):
+    default_args = {
+    #'--time_step_multiplier':       (int, 1), #<--- this is default
+    #'--delta_control':              (int, 1), #<--- this is default
+    '--episodes':                   (int, 1),
+    '--horizon':                    (float, 0.0),
+    }
+    def __init__(self, parser):
+        # remeber to call   parser = argparse.ArgumentParser() in controler
+        for arg_name,(arg_type, arg_default) in self.default_args.items():
+            parser.add_argument(arg_name, type=arg_type, default=arg_default)
+        # parser.parse_args() returns a Namespace object 
+        # to get arguments, use - [Namesapce.__dict__]   or  [for (k,v) in Namesapce._get_kwargs():] 
+        for (k,v) in parser.parse_args()._get_kwargs():
+            setattr(self, k, v) #<---- sets on self
+        self.initialize()
 
     def initialize(self):
-        #self.keyboard = self.robot.getKeyboard()
-        # get devices ----------------------------------
-        #print('[@] - Initialize Robot Devices')
-        self.imu = self.robot.getDevice('imu')
-        self.gps = self.robot.getDevice('gps')
-        self.gyro = self.robot.getDevice('gyro')
 
-        self.led_dLAND = self.robot.getDevice('led_DSEN_LAND')
-        self.dLAND = self.robot.getDevice('DSEN_LAND')
+        if self.horizon<1:
+            self.horizon = inf
+
+        # initialize------------------------------------------------------------------------------------------
+        self.state_dtype = np.float64
+        self.action_dtype = np.float64
+
+        # known constants
+        self.battery_scan_time =     1000      
+        self.battery_min_val =       100.0    
+        self.initial_wait_time =     (self.battery_scan_time/1000) + 0.1 
+        self.final_wait_time =       self.initial_wait_time * 3
+        self.delta_control =         True #<--- this is default
+        
+        # delta continous : increments/decrements values by any amount within range (requires clipping)
+        # controls delta                     roll,    pitch,    yaw,    altitude
+        self.control_delta_low =  np.array((   -pi/8,      -pi/8,     -pi/8,    -0.1  ), dtype=self.action_dtype)
+        self.control_delta_high = np.array((    pi/8,      pi/8,     pi/8,      0.1   ), dtype=self.action_dtype)
+        #self.control_delta_zero = np.array((    0.0,     0.0,     0.0,     0.0    ), dtype=self.action_dtype) # starting default value
+        self.mapped_delta_range = (self.control_delta_low, self.control_delta_high)
+
+        # direct controls : sets the values directly within range
+        # controls_direct                      roll,  pitch,   yaw,  altitude
+        self.control_direct_low =  np.array((   -pi,   -pi,   -pi,    0.1    ), dtype=self.action_dtype)
+        self.control_direct_high = np.array((   pi,   pi,   pi,     10.0  ), dtype=self.action_dtype)
+        #self.control_direct_zero = np.array((    0.0,    0.0,    0.0,    1.0    ), dtype=self.action_dtype) # starting default value
+        self.mapped_direct_range = (self.control_direct_low, self.control_direct_high)
+        
+        self.initial_altitude = 1.0
+        self.default_actuators = np.array((    0.0,    0.0,    0.0,    self.initial_altitude   ), dtype=self.action_dtype)
+
+        
+        # control type
+        if self.delta_control:
+            self.control_low = self.control_delta_low
+            self.control_high = self.control_delta_low
+            #self.control_zero = self.control_delta_zero
+            self.control_range = self.mapped_delta_range
+            self.default_step = self.delta_step
+        else:
+            self.control_low = self.control_direct_low
+            self.control_high = self.control_direct_high
+            #self.control_zero = self.control_direct_zero
+            self.control_range = self.mapped_direct_range
+            self.default_step = self.direct_step
+
+        # state space
+        self.state_shape = (37,)
+        self.state_space = gym.spaces.Box(shape=self.state_shape, low=-np.inf, high=np.inf, dtype=self.state_dtype)
+        self.S = np.zeros(self.state_space.shape, dtype=self.state_space.dtype) # state vector
+        
+        # views Sensor
+        
+        # Inertial Measurement unit
+        self.inertia =                          self.S[0:3]
+        self.roll, self.pitch, self.yaw =       self.S[0:1], self.S[1:2], self.S[2:3]
+        # gps location
+        self.location =                         self.S[3:6]
+        self.gX, self.gY, self.gZ =             self.S[3:4], self.S[4:5], self.S[5:6]
+        # gyroscope
+        self.orientation =                      self.S[6:9]
+        self.rollA, self.pitchA, self.yawA =    self.S[6:7], self.S[7:8], self.S[8:9]
+        # battery
+        self.battery_level =     self.S[9:10]
+        # now, 3+3+3+1 = 10
+
+        # distance (4+4+2 = 10)
+        self.LAND = self.S[10:11]
+        self.SKY = self.S[11:12]
+        self.RLS = self.S[12:13]
+        self.RLF = self.S[13:14]
+        self.FLS = self.S[14:15]
+        self.FLF = self.S[15:16]
+        self.RRS = self.S[16:17]
+        self.RRF = self.S[17:18]
+        self.FRS = self.S[18:19]
+        self.FRF = self.S[19:20]
+        # TOTAL SENSORS 
+        self.SENSORS = self.S[0:20]
+
+
+        # actuators
+        self.ACTUATORS = self.S[20:24]
+        self.roll_disturbance= self.S[20:21]
+        self.pitch_disturbance=self.S[21:22]
+        self.yaw_disturbance=self.S[22:23]
+        self.target_altitude=self.S[23:24]
+        
+
+        # motor velocities
+        self.motor_velocities = self.S[24:28]
+        self.FLv, self.FRv, self. RLv, self.RRv = self.S[24:25], self.S[25:26], self.S[26:27], self.S[27:28]
+
+        # current velocity
+        self.base_velocity = self.S[28:34]
+        self.linear_velocity = self.S[28:31]
+        self.angular_velocity = self.S[31:34]
+
+        # target location
+        self.target_point = self.S[34:37]
+        self.tx, self.ty, self.tz = self.S[34:35], self.S[35:36], self.S[36:37]
+
+        
+        
+        # observation
+        self.observation_shape = self.state_shape
+        self.observation_space = gym.spaces.Box(shape=self.observation_shape, low=-np.inf, high=np.inf, dtype=self.state_dtype)
+        self.observation = self.S[:]
+    
+        # action
+        self.action_shape = (len(self.ACTUATORS),) # controls          roll,  pitch,   yaw,  altitude
+        self.action_space = gym.spaces.Box(shape=self.action_shape, low=-1, high=1,  dtype=self.action_dtype)
+        self.action_range = (self.action_space.low, self.action_space.high)
+        self.action_mapper = REMAP(Input_Range=self.action_range, Mapped_Range= self.control_range)
+        
+        self.MAX_MOTOR_VELOCITY = np.zeros_like(self.motor_velocities) + 576
+        self.MIN_MOTOR_VELOCITY = np.zeros_like(self.motor_velocities) - 576
+
+        # velocities are available in supervisor mode 
+        self.VELOCITY_LIMIT = np.array( [ 0.0 for _ in range(6) ] ) + 100
+    
+    def build_devices(self):
+        self.imu = self.getDevice('imu')
+        self.gps = self.getDevice('gps')
+        self.gyro = self.getDevice('gyro')
+
+        self.led_land = self.getDevice('led_DSEN_LAND')
+        self.dLAND = self.getDevice('DSEN_LAND')
+        self.dSKY = self.getDevice('DSEN_SKY')
+        
+        self.dRLS = self.getDevice('DSEN_RLS')
+        self.dRLF = self.getDevice('DSEN_RLF')
+        self.dFLS = self.getDevice('DSEN_FLS')
+        self.dFLF = self.getDevice('DSEN_FLF')
+
+        self.dRRS = self.getDevice('DSEN_RRS')
+        self.dRRF = self.getDevice('DSEN_RRF')
+        self.dFRS = self.getDevice('DSEN_FRS')
+        self.dFRF = self.getDevice('DSEN_FRF')
 
         # get motors 
-        self.front_left_motor = self.robot.getDevice('flp')
-        self.front_right_motor = self.robot.getDevice('frp')
-        self.rear_left_motor = self.robot.getDevice('rlp')
-        self.rear_right_motor = self.robot.getDevice('rrp')
+        self.front_left_motor = self.getDevice('flp')
+        self.front_right_motor = self.getDevice('frp')
+        self.rear_left_motor = self.getDevice('rlp')
+        self.rear_right_motor = self.getDevice('rrp')
         self.motors = (self.front_left_motor, self.front_right_motor, self.rear_left_motor, self.rear_right_motor)
 
         # enable devices ----------------------------------
@@ -89,357 +278,214 @@ class MAVBOT:
         self.gps.enable(self.timestep)
         self.gyro.enable(self.timestep)
         self.dLAND.enable(self.timestep)
+        self.dSKY.enable(self.timestep)
+                
+        self.dRLS.enable(self.timestep)
+        self.dRLF.enable(self.timestep)
+        self.dFLS.enable(self.timestep)
+        self.dFLF.enable(self.timestep)
+
+        self.dRRS.enable(self.timestep)
+        self.dRRF.enable(self.timestep)
+        self.dFRS.enable(self.timestep)
+        self.dFRF.enable(self.timestep)
+        
         # enable battery ----------------------------------
         # <--- note: battery is not a 'device' its just a 'field' with 3 values - Current Level, Max level, Charging Rate
-        self.robot.batterySensorEnable(self.battery_scan_time) #<---- argument is the battery sampling period in ms
+        self.batterySensorEnable(self.battery_scan_time) #<---- argument is the battery sampling period in ms
         # initialize motor position and velocity (max 576)
         for m in self.motors:
             m.setPosition(inf)
             m.setVelocity(0.0)
 
-    def build_spaces(self):
-        self.observation_space = gym.spaces.Box(shape=(11,), low=-np.inf, high=np.inf, dtype=self.state_dtype)
-        self.S = np.zeros(self.observation_space.shape, dtype=self.observation_space.dtype)
-        self.roll, self.pitch, self.yaw =       self.S[0:1], self.S[1:2], self.S[2:3]
-        self.gX, self.gY, self.gZ =             self.S[3:4], self.S[4:5], self.S[5:6]
-        self.rollA, self.pitchA, self.yawA =    self.S[6:7], self.S[7:8], self.S[8:9]
-        self.dis2land, self.battery_level =     self.S[9:10], self.S[10:11]
-
-
-        #self.min_v = np.zeros(len(self.motors), dtype=self.action_dtype)
-        #self.max_v = np.zeros(len(self.motors), dtype=self.action_dtype) + 576
-        self.action_space = gym.spaces.Box(shape=(4,), low=-1, high=1,  dtype=self.action_dtype)
-        self.action_mapper = REMAP(Input_Range=(-1, 1), Mapped_Range=(0, 576))
-
-    def reset(self):
-        #print('Reset Called <-----')
-        self.robot.simulationResetPhysics()
-        self.robot.simulationReset()
-        self.robot.step(self.timestep)
-        #print('Trying initializing devices')
-        self.initialize()
-        self.robot.step(self.timestep)
-        #print('Initial wait <------------')
-
-        while self.robot.step(self.timestep) != -1:
-            if (self.robot.getTime() > self.initial_wait_time):
-                break   
-        # can be used to record initializ information
-        #print('Initial Sensor reading <------------')
-        self.initial_gps_location = -1*np.array(self.gps.getValues())
-        
-        self._dis2land = float(self.dis2land)
-
-        #print(f'Initial BATTERY: [{self.initial_battery_level}]')
-        self.read()
-        #print(self.S)
-        return False
-
-    def read(self):
+    def scan(self):
         # reads the state from sensor data
         # either use a build in state or return a new state from readings
-        self.gps_read =  self.gps.getValues()
-        self.S[0:3] =                           self.imu.getRollPitchYaw()
-        self.S[3:6] =                           self.initial_gps_location + self.gps_read
-        self.S[6:9] =                           self.gyro.getValues()
-        self.S[9:10] =                          self.dLAND.getValue()
-        self.S[10:11] =                         self.robot.batterySensorGetValue()
-        return self.S, self._done()
-    def _done(self):
+        self.inertia[:] =       self.imu.getRollPitchYaw()
+        self.location[:] =      self.gps.getValues()
+        self.orientation[:] =   self.gyro.getValues()
+        self.battery_level[:] = self.batterySensorGetValue()
+        self.LAND[:], self.SKY[:], \
+        self.RLS[:], self.RLF[:], \
+        self.FLS[:], self.FLF[:], \
+        self.RRS[:], self.RRF[:], \
+        self.FRS[:], self.FRF[:] = \
+        self.dLAND.getValue(), self.dSKY.getValue(), \
+        self.dRLS.getValue(), self.dRLF.getValue(), \
+        self.dFLS.getValue(), self.dFLF.getValue(), \
+        self.dRRS.getValue(), self.dRRF.getValue(), \
+        self.dFRS.getValue(), self.dFRF.getValue()
+        self.base_velocity[:] = self.getSelf().getVelocity()
+        self.base_velocity[:] = np.abs(self.base_velocity)
+        return # self.observation
+
+    def is_terminal(self):
         # checks if the sensors read an invalid state 
-        # - which causes feed back loop termination
+        if (self.base_velocity > self.VELOCITY_LIMIT).any():
+            #self.getSelf().resetPhysics()
+            return True, f"Rouge Velocity :: {self.base_velocity}"
         if self.battery_level<self.battery_min_val:
-            self._stop_motor()
-            #print('Stopping :: Battery End!!')
-            return True #<---- very low battery = 10 cycle left
+            return True, f"Battery Empty :: {self.battery_level}"
         if self.gZ<=0.0657594:
-            if self.roll < -0.7 or self.roll > 0.7 or self.pitch < -0.7 or self.pitch > 0.7:
-                self._stop_motor()
-                #print('Stopping :: Crashed!!')
-                return True #<---- drone has crashed
-        return False
+            if (self.roll < -0.7 or self.roll > 0.7 or self.pitch < -0.7 or self.pitch > 0.7):
+                return True, f"Crashed :: {self.inertia}" # :: GYRO({self.orientation}), IMU:({self.inertia})
+        return False, ""
 
-    def step(self, action):
-        # write actuator inputs
-        #print(self.roll, self.rollA, self.pitch, self.pitchA, self.yaw, self.yawA)
-        self._step_motor(self.action_mapper.in2map(action))
-        
-        return (self.robot.step(self.timestep) == -1)
-
-    def reward(self):
-       # _dis2land = float(self.dis2land)
-        r = (self.dis2land - self._dis2land)*0.001 + abs(self.gps_read[2] - 1.0)  - (abs(self.rollA) + abs(self.pitchA))
-        
-        return float(r)
-
-    def _stop_motor(self):
-        self._step_motor([0,0,0,0])
-    def _step_motor(self, velocities):
-        for m, v in zip(self.motors, velocities):
+    def _step(self):
+        roll_input =    50.0  *   np.clip(self.roll, -1.0, 1.0) +   self.rollA +    self.roll_disturbance
+        pitch_input =    30.0  *  np.clip(self.pitch, -1.0, 1.0) +  self.pitchA +   self.pitch_disturbance
+        vertical_thrust = 68.5 +    (3.0 * (np.clip(self.target_altitude - self.gZ + 0.6, -1.0, 1.0)**3)) # first tem is base thrust
+        self.motor_velocities[0] = (vertical_thrust  - roll_input + pitch_input - self.yaw_disturbance) # front left
+        self.motor_velocities[1] = -(vertical_thrust  + roll_input + pitch_input + self.yaw_disturbance) # front right
+        self.motor_velocities[2] = -(vertical_thrust  - roll_input - pitch_input + self.yaw_disturbance) # rear left
+        self.motor_velocities[3] = (vertical_thrust  + roll_input - pitch_input - self.yaw_disturbance) # rear right
+        self.motor_velocities = np.clip(self.motor_velocities, self.MIN_MOTOR_VELOCITY, self.MAX_MOTOR_VELOCITY)
+        for m, v in zip(self.motors, self.motor_velocities):
             m.setVelocity(v)
+        return (self.step(self.timestep) == -1)
 
-    def episode(self):
-        if not self.pie.has_pie():
-            print('Policy missing! using random actions.')
+    def delta_step(self, action):
+        # write actuator inputs
+        self.ACTUATORS[:] += self.action_mapper.in2map(action) # roll pitch, yaw, alt
+        self.ACTUATORS[:] = np.clip(self.ACTUATORS[:], self.control_direct_low, self.control_direct_high)
+        return self._step()
+
+    def direct_step(self, action):
+        # write actuator inputs
+        self.ACTUATORS[:] = self.action_mapper.in2map(action) # roll pitch, yaw, alt
+        return self._step()
+
+
+    def take_action(self):
+        # read self.observation
+        return self.action_space.sample()
+
+    def run(self, verbose=False):
+        # -- ** -- ** -- ** -- ** -- ** -- ** -- ** -- ** -- ** -- ** -- ** -- ** -- ** -- ** -- ** -- ** -- ** -- **
+        # robot setup
+        # -- ** -- ** -- ** -- ** -- ** -- ** -- ** -- ** -- ** -- ** -- ** -- ** -- ** -- ** -- ** -- ** -- ** -- **
+
+        # initialize Robot() instance
+        super().__init__()
+
+        # superbot checker - this indicates the superbot that i am still busy (control not exit)
+        self.getSelf().getField('controllerArgs').insertMFString(-1, '') #<-- insert a blank string, this will be checked by superbot
+
+        # determine timestep
+        self.timestep = int( self.getBasicTimeStep() ) #* self.time_step_multiplier
+        robot_name = self.getName()
+        #msg = lambda text : print(f'[{self.robot_name} @ ({now()})]::[{text}]')
+        msg = ((lambda text : print(f'({robot_name}): {text}')  ) if verbose else (lambda text : None ))
+        self.step(self.timestep)
+
+        # build devices
+        self.build_devices()
+        self.step(self.timestep) 
+        #self.getSelf().getField('controllerArgs').setMFString(-1, '')  # set this field to blank to indicate superbot
+        
+        # start feedback loop
+        msg('~ Start Bot')
+        # note down initial position - will reset to this position  # self.getSelf().resetPhysics()
+        irotation = self.getSelf().getField('rotation').getSFRotation()
+        itranslation = self.getSelf().getField('translation').getSFVec3f()
+
+        replay = MEM(capacity=1_000, observation_space=self.observation_space, action_space=self.action_space, seed=None)
+        for episode in range(self.episodes):
+            msg('------> episode:[{}]'.format(episode+1))
+            # -- ** -- ** -- ** -- ** -- ** -- ** -- ** -- ** -- ** -- ** -- ** -- ** -- ** -- ** -- ** -- ** -- ** -- **
+            # boot up sequence 
+            # -- ** -- ** -- ** -- ** -- ** -- ** -- ** -- ** -- ** -- ** -- ** -- ** -- ** -- ** -- ** -- ** -- ** -- **
+            msg('------> Booting up...')
+            # 1 - (initial waiting) - specially for slow sensors - like battery
+            waiting = self.getTime()
+            while self.step(self.timestep) != -1:
+                if (self.getTime()-waiting > self.initial_wait_time):
+                    break #print('...initial wait over')
+
+            msg('------> Launching')
+            self.led_land.set(1)
+            self.scan() #<--- we have stepped 
+            self.ACTUATORS[:] = self.default_actuators
+
+            # 3 - (ready the robot)
+            is_ready = (self.gZ[0]>=self.initial_altitude) #<---- ready condition
+            while not is_ready:
+                self._step()
+                self.scan()
+                is_ready = (self.gZ[0]>=self.initial_altitude)
             
-
-        #zero_action = self.action_space.sample()*0
-        timeout = self.reset() # this indicates the bot to get ready
-        done = False
-        ts = 0
-        terminate = (timeout or done)
-        # feedback loop: step simulation until receiving an exit event
-        #print('Starting feedback loop')
-        while not (terminate):
-            ts+=1
-            # read sensors outputs #<--- implement as observation_space
-            state, done = self.read() #<--- this updates bot.state with updated data / returns a state
-            #print(f'{ts=}, {done=}, {state=}')
-            if not done: # process behavior
-                action = self.pie.predict(state)
-                timeout = self.step(action) # write actuators inputs
-            else:
-                action = None
-                timeout = False
-                
-            terminate = (timeout or done)
-            #print(f'->>{action}:{timeout=}:{done=}:{terminate=}')
-        return ts
-        
-def train_ddpg(bot):
-    """ Trains using deep deterministic policy gradients 
-    
-        bot :   instance of MAVBOT
-    """
-
-    dtype=tt.float32
-    device='cpu'
-
-    observation_space = bot.observation_space
-    action_space = bot.action_space
-    
-    memory_capacity = 50000
-    memory_seed = None
-
-    total_steps = 100_000
-    pie_lr = 0.003
-    val_lr = 0.001
-
-    # > training parameters here
-    training_frequency = 1000 # steps - trains after every (training_frequency) steps
-    
-    learn_times = 3
-    batch_size = 512
-    start_steps = batch_size*5 #<--- explored sperated (independent of epochs)
-    
-    train_value_iters = 80
-    polyak_val = 0.1
-    polyak_pie = 0.1
-    # discounting 
-    gamma = 0.9999
-    # for noisy exploration
-    action_noise_mean = 0 
-    action_noise_sdev = 0.1
-
-    
-
-    #-----------------------------------------------------------------------------------------
-    # [1] setup policy and value networks
-    #-----------------------------------------------------------------------------------------
-    pie =  MLP(
-        in_dim=observation_space.shape[0],
-        layer_dims=[256,256,256,256],
-        out_dim=action_space.shape[0],
-        actF=tt.nn.ReLU, actL=tt.nn.Tanh).to(device, dtype)
-    pie_ = clone_model(pie, detach=True)
-
-    val = MLP2(
-        in_dim_s=observation_space.shape[0],
-        in_dim_a=action_space.shape[0],
-        layer_dims=[256,256,256,256],
-        out_dim=1, actF=tt.nn.ReLU, actL=None).to(device, dtype)
-    val_ = clone_model(val, detach=True)
-
-    pie_.eval()
-    val_.eval()
-
-    # setup optimizer
-    pie_opt = tt.optim.Adam(pie.parameters(), lr = pie_lr, weight_decay=0.0)
-    pie_lrs = tt.optim.lr_scheduler.LinearLR(pie_opt, start_factor=1.0, end_factor=0.5, total_iters=total_steps)
-
-    val_opt = tt.optim.Adam(val.parameters(), lr = val_lr, weight_decay=0.0)
-    val_lrs = tt.optim.lr_scheduler.LinearLR(val_opt,  start_factor=1.0, end_factor=0.5, total_iters=total_steps)
-    val_loss = tt.nn.MSELoss()
-
-    mem = MEM(observation_space, action_space, 
-                capacity=memory_capacity, seed=memory_seed)
-
-
-
-    zero_action = action_space.sample()*0
-    epsilon = NormalActionNoise(
-                mean= action_noise_mean * np.ones_like(zero_action), 
-                sigma= action_noise_sdev * np.ones_like(zero_action))
-
-
-
-    #-----------------------------------------------------------------------------------------
-
-    #-----------------------------------------------------------------------------------------
-    # [2] training - Training happens in between simulation
-    #-----------------------------------------------------------------------------------------
-
-    @tt.no_grad()
-    def take_action(observation):
-        return pie(tt.tensor(observation, dtype=dtype, device=device)).numpy().astype(action_space.dtype) 
-
-    @tt.no_grad()
-    def take_noisy_action(observation):
-        return np.clip(pie(tt.tensor(observation, dtype=dtype, device=device)).numpy().astype(action_space.dtype) + epsilon(), 
-                    a_min=action_space.low, a_max=action_space.high)
-
-    @tt.no_grad()
-    def update_target(theta, theta_, polyak):
-        for target_params, model_params in zip(theta_.parameters(), theta.parameters()):
-            target_params*=(polyak)
-            target_params+=((1-polyak)*model_params)
-
-
-    #-----------------------------------------------------------------------------------------
-    _start_time = now()
-    terminate=True
-    tr = None
-    # starting loop
-    for _ in range(start_steps):
-        if terminate:
-            # just reset it-------------------------------------------
-            timeout = bot.reset() # this indicates the bot to get ready
-            done = False
-            ts = 0
-            tr=0.0
-            terminate = (timeout or done)
-            # --------------------------------------------------------
-
-        ts+=1 # stepping ... (running timestep)
-        # observe a state and select action
-        state, done = bot.read() #<--- this updates bot.state with updated data / returns a state
-        #print(f'{ts=}, {done=}, {state=}')
-        if not done: # process behavior
-            action = action_space.sample()
-            timeout = bot.step(action) # write actuators inputs
-            reward = bot.reward()
-            tr+=reward
-        else:
-            action = zero_action
-            timeout, reward = False, 0.0
-        terminate = (timeout or done)
-        #print(f'->>{action}:{timeout=}:{done=}:{terminate=}')
-        mem.snap(mask=not (terminate), observation=state, action=action , reward=reward, done=terminate, step=ts ) 
-
-    print('Starting Steps Explored: {}'.format(mem.length()))
-
-
-    # training loop
-    step = 0
-    episode = 0
-    train_hist, train_count = [], 0
-    
-    while step<=total_steps:
-        step+=1 # running epoch
-        
-        if terminate:
-            # just reset it-------------------------------------------
-            print(f'Last-Episodic-Reward:[{episode=}]::[{tr=}]')
-            timeout = bot.reset() # this indicates the bot to get ready
-            done = False
-            ts = 0
-            tr = 0.0
-            terminate = (timeout or done)
-            episode+=1
-            # --------------------------------------------------------
-
-        ts+=1 # stepping ... (running timestep)
-        # observe a state and select action
-        state, done = bot.read() #<--- this updates bot.state with updated data / returns a state
-        #print(f'{ts=}, {done=}, {state=}')
-        if not done: # process behavior
-            action = take_noisy_action(state) 
-            timeout = bot.step(action) # write actuators inputs
-            reward = bot.reward()
-            tr+=reward
-        else:
-            action = zero_action
-            timeout, reward = False, 0.0
-        terminate = (timeout or done)
-        #print(f'->>{action}:{timeout=}:{done=}:{terminate=}')
-        mem.snap(mask=not (terminate), observation=state, action=action , reward=reward, done=terminate, step=ts ) 
-
-        if step%training_frequency==0: # .to(device, dtype)
-            print(f'[Training] :: {step = } of {total_steps} :: {episode = } :: {train_count = }')
-            # time for training 
-            pie.train(True)
-            val.train(True)
-            # ~ - ~ - ~ - ~ - ~ - ~ - ~ - ~ - ~ - ~ - ~ - ~ - ~ - ~ - ~ - ~ - ~ - ~ -
-            for _ in range(learn_times):
-                #  batch_size, dtype, device, discrete_action, replace=False
-                pick, samples = mem.sample_random_(size=batch_size, replace=False)
-                batch = mem.readkeis(
-                (samples,          samples+1,        samples,     samples,     samples+1,     ), #samples      ), 
-                (observation_key,  observation_key,  action_key,  reward_key,  done_key,      ), #step_key     ), 
-                ('cS',             'nS',             'A',         'R',         'D',           )) #'T'          ))
-                # return pick, cS, nS, A, R, D, T
-                
-                cS = tt.tensor(batch['cS'], dtype=dtype, device=device)
-                nS = tt.tensor(batch['nS'], dtype=dtype, device=device)
-                A =  tt.tensor(batch['A'], dtype=(dtype), device=device)
-                R =  tt.tensor(batch['R'], dtype=dtype, device=device).unsqueeze(-1)
-                D =  tt.tensor(batch['D'], dtype=dtype, device=device).unsqueeze(-1)
-                #T = tt.tensor(batch['T'], dtype=dtype, device=device)
-
-                with tt.no_grad(): #<=====================================
-                    pie_ns = pie_(nS)
-                    target_val = val_(nS, pie_ns)
-                    target = R + gamma * target_val * (1 - D)
-                #<========================================================
-                #print(f'{pie_ns.shape = }, {target_val.shape = }, {target.shape = }')
-                
-                for _ in range(train_value_iters):
-                    val_opt.zero_grad()
-                    pred = val(cS, A)
-                    #print(f'{pred.shape = }, {target.shape = }')
-                    qloss =  val_loss(pred, target)
-                    qloss.backward()
-                    val_opt.step()
-                
+            # 4 - (record initial information, declare this as initial state)
+            #self.initial_gps_location = -1*np.array(self.gps.getValues())       
+            self.led_land.set(0)
             
-                pie_opt.zero_grad()
-                pred_actions = pie(cS)
-                ploss = -(val(cS, pred_actions).mean())
-                ploss.backward()
-                pie_opt.step()
+            msg('------> Ready')
+            # -- ** -- ** -- ** -- ** -- ** -- ** -- ** -- ** -- ** -- ** -- ** -- ** -- ** -- ** -- ** -- ** -- ** -- **
+            # feedback loop
+            # -- ** -- ** -- ** -- ** -- ** -- ** -- ** -- ** -- ** -- ** -- ** -- ** -- ** -- ** -- ** -- ** -- ** -- **
+            timeout = self._step() # <---- first step (already scanned - when ready=True) 
+            ts, done = -1, False
+            terminate = (timeout or done)
+            # feedback loop: step simulation until receiving an exit event
+            #print('Starting feedback loop')
+            while not (terminate):
+                ts+=1        
+                self.scan() #<--- this updates self.observation         
+                if ts>=self.horizon:
+                    done, reason= True, f"End of Time :: {ts} of {self.horizon}"
+                else:
+                    done, reason = self.is_terminal() #<---- this checks self.observation (actually self.state)
+                if not done: # process behavior
+                    action = self.take_action() #self.pie.predict(self.observation)
+                    timeout = self.default_step(action) # write actuators inputs
+                else: # robot finds itself in terminal state, cannot take action
+                    action = self.action_space.sample()*0
+                    timeout = False
+                    msg('[!] ' + reason)
+                terminate = (timeout or done)
+                replay.snap(not(terminate), **{observation_key:self.observation, action_key:action, done_key:done, step_key:ts})
+                # cS, A, done(cS), ts
+                # nS, 0, done(nS)
+                # 
 
-                update_target(val, val_, polyak_val)
-                update_target(pie, pie_, polyak_pie)
-                
-                val_.eval()
-                pie_.eval()
+            msg('------> Terminating...')
 
-            # ~ - ~ - ~ - ~ - ~ - ~ - ~ - ~ - ~ - ~ - ~ - ~ - ~ - ~ - ~ - ~ - ~ - ~ -
-            #loss_hist.append((ploss.item(), qloss.item()))
-            train_hist.append( (pie_lrs.get_last_lr()[-1], val_lrs.get_last_lr()[-1])  )
-            pie_lrs.step()
-            val_lrs.step()
-            train_count+=1
+            self.getSelf().resetPhysics()
+            for m in self.motors:
+                m.setVelocity(0.0)
+            waiting = self.getTime()
+            while self.step(self.timestep) != -1:
+                if ((self.getTime()-waiting ) > self.final_wait_time):
+                    break #print('Killed Motors')
+            self.getSelf().getField('rotation').setSFRotation(irotation)
+            self.getSelf().getField('translation').setSFVec3f(itranslation)
+            msg('------> Terminated.')
 
-            pie.train(False)
-            val.train(False)
-        # training end
-    # epochs end
-    _end_time=now()
-    print('Training Finished: [{}]'.format(_end_time - _start_time ))
-    bot.robot.simulationSetMode(0)
-    return train_count, train_hist[-5:]
-        
-            
+        msg('~ Stop Bot')
+        msg(f'Replay Memeory :: Len: {replay.length()},  Count:{replay.count()},  Cap:{replay.capacity}')
+        self.getSelf().getField('controllerArgs').setMFString(-1, '_')
 
-        
+        return  #cS, A, R
+
+
+
+
+
+
+"""ARCHIVE:
+    #self.simulationSetMode(0)
+    #self.simulationReset()
+    #for bot in self.bots:
+    #    bot.restartController()
+
+    
+    #for c,a in zip(self.botsctrl, self.botsctrlargs):
+    #    a.setMFString( 0, '--time_step_multiplier=1')
+    #    a.setMFString( 1, '--delta_control=1')
+    #    c.setSFString('mavrl')
+        #for b,m in zip(self.bots,self.members):
+        #    b.saveState( m + '_STATE' )
+        #for c in self.botsctrl:
+        #    c.setSFString('') #<--- this will cause timeout on robots
+"""
+
+
