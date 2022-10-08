@@ -1,0 +1,12 @@
+
+cd ..../module
+python38 -m build
+python38 -m twine upload dist/*
+NelsonSharma
+XnUiC@1990_2020
+
+
+known			version =       '0.0.4',  # 0.0.x is for unstable versions
+mdlog			version =       '0.1.1', 
+relearn		    version =       '0.0.14',  # 0.0.x is for unstable versions
+rlgw			version =       '0.0.16',  # 0.0.x is for unstable versions
